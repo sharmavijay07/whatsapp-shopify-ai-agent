@@ -55,6 +55,38 @@ def test_embedded_qdrant_stays_available_off_render(monkeypatch):
     assert "all-MiniLM-L6-v2" in settings.llm_status()["embeddings"]["model"]
 
 
+def test_render_minilm_stays_on_bm25_even_with_a_qdrant_url(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    settings = Settings(
+        vector_store="qdrant",
+        qdrant_url="https://example.cloud.qdrant.io:6333",
+        qdrant_api_key="qd_test",
+        embedding_provider="sentence-transformers",
+    )
+    assert settings.uses_memory_index() is True
+    assert settings.embedding_status()["provider"] == "bm25"
+
+
+def test_hosted_embeddings_use_qdrant_cloud_on_render(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    settings = Settings(
+        vector_store="qdrant",
+        qdrant_url="https://example.cloud.qdrant.io:6333",
+        qdrant_api_key="qd_test",
+        embedding_provider="hosted",
+        embedding_model="jina-embeddings-v3",
+        embedding_api_url="https://api.jina.ai/v1",
+    )
+    assert settings.uses_memory_index() is False
+    assert settings.embedding_status() == {
+        "provider": "hosted",
+        "model": "jina-embeddings-v3",
+        "device": "api",
+    }
+    assert settings.email_is_configured is False
+    assert settings.n8n_configured is False
+
+
 def test_render_without_qdrant_url_uses_bm25(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     settings = Settings(

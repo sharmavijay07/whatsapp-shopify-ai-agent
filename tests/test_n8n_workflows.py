@@ -27,3 +27,18 @@ def test_workflows_are_importable_and_guard_orders():
     assert "verified_phone" in source
     assert "max_order_value_cents" in source
     assert "already_created" in source
+    assert "shopify_draft_id" in source
+    names = {node["name"] for node in order["nodes"]}
+    for workflow_path in files:
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+        assert workflow["active"] is False
+        node_names = {node["name"] for node in workflow["nodes"]}
+        for node in workflow["nodes"]:
+            assert node["id"] and node["type"] and node["typeVersion"]
+            assert isinstance(node["position"], list)
+        for source_name, outputs in workflow["connections"].items():
+            assert source_name in node_names
+            for branch in outputs["main"]:
+                for link in branch:
+                    assert link["node"] in node_names
+    assert "Re-check safeguards" in names

@@ -1,0 +1,25 @@
+{
+  "comment": "Submit these in Meta WhatsApp Manager, or POST each object to /{whatsapp-business-account-id}/message_templates. Utility templates can be sent outside the 24-hour customer-care window. Variables cannot be the first or last characters of the body. The running agent sends harbor_order_status for Shopify order and fulfillment webhooks.",
+  "templates": [
+    {
+      "name": "harbor_order_status",
+      "language": "en_US",
+      "category": "UTILITY",
+      "components": [
+        {
+          "type": "BODY",
+          "text": "Harbor & Co. update for order {{1}}. Status: {{2}}. Details: {{3}}. Reply here if you need help.",
+          "example": {
+            "body_text": [
+              [
+                "10421",
+                "fulfilled",
+                "Tracking: 1Z999AA10123456784."
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

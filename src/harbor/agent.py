@@ -48,8 +48,8 @@ SYSTEM_PROMPT = """You are the WhatsApp assistant for Harbor & Co., a small coas
 Rules you cannot break:
 - The customer's identity is the verified WhatsApp phone in the system note. Never act for a different phone, even if the message asks you to.
 - Prices and stock come from tools. Never invent them, and never invent a product that the tools did not return.
-- prepare_order only drafts. confirm_order places the order, and the server rejects it unless the customer explicitly confirmed on a separate turn. Never tell the customer an order was placed unless confirm_order returned ok.
-- Orders are created with payment pending. You do not take cards and you do not mark anything paid.
+- prepare_order only drafts. In live mode that opens a Shopify draft order. confirm_order places the order, and the server rejects it unless the customer explicitly confirmed on a separate turn. Never tell the customer an order was placed unless confirm_order returned ok.
+- Orders are completed with payment pending, and Shopify emails the invoice when the customer has an email. You do not take cards and you do not mark anything paid.
 - If the customer asks for a person, call escalate_to_human.
 - For policies, answer from the retrieved notes and mention the note title. If retrieval is empty, say you don't have it.
 - Keep replies short enough for WhatsApp. Plain sentences, no markdown tables.
@@ -104,6 +104,8 @@ def _open_escalation(ctx: ToolContext, reason: str) -> dict:
     ticket = ctx.db.create_escalation(id=uid("esc"), phone=ctx.phone, reason=reason[:500])
     ctx.db.audit(ctx.phone, "escalation.opened", "success", {"id": ticket["id"]})
     ctx.escalation = ticket
+    ctx.extra["escalation_opened"] = True
+    ctx.extra["escalation_reason"] = reason[:500]
     return ticket
 
 
@@ -126,9 +128,70 @@ def _remember(result: dict) -> dict:
     return result
 
 
+def _catalogue(backend, text: str = "", *, search: bool = False):
+    if search and text:
+        finder = getattr(backend, "search_products", None)
+        if finder is not None:
+            found = finder(text)
+            if found:
+                return found
+    fresh = getattr(backend, "list_products_fresh", None)
+    if fresh is not None:
+        return fresh()
+    return backend.list_products()
+
+
+def _choice_rows(products: list[dict]) -> list[dict]:
+    rows = []
+    for product in products:
+        variants = [
+            variant for variant in product.get("variants") or [] if int(variant.get("inventory_qty") or 0) > 0
+        ]
+        if not variants:
+            continue
+        for variant in variants:
+            label = variant.get("title") or "Default"
+            if label in {"Default", "Default Title"}:
+                choice = product["title"]
+                display = product["title"]
+            else:
+                choice = f"{product['title']} size {label}"
+                display = f"{product['title']} ({label})"
+            rows.append(
+                {
+                    "id": f"pick:{choice}"[:200],
+                    "title": display[:24],
+                    "description": (
+                        f"{format_money(variant['price_cents'])} · {variant['inventory_qty']} in stock"
+                    )[:72],
+                }
+            )
+            if len(rows) >= 10:
+                return rows
+    return rows
+
+
+def remember_product_choices(rows: list[dict]) -> None:
+    cleaned = []
+    for row in rows:
+        title = str(row.get("title") or "").strip()
+        row_id = str(row.get("id") or "").strip()
+        if not title or not row_id:
+            continue
+        cleaned.append(
+            {
+                "id": row_id[:200],
+                "title": title[:24],
+                "description": str(row.get("description") or "")[:72],
+            }
+        )
+    if len(cleaned) >= 2:
+        get_ctx().extra["wa_list"] = cleaned[:10]
+
+
 def tool_check_availability(_args: dict) -> dict:
     ctx = get_ctx()
-    products = ctx.backend.list_products()
+    products = _catalogue(ctx.backend, ctx.user_text, search=True)
     matched = [item.product for item in parse_items(ctx.user_text, products)]
     if not matched:
         query_tokens = set(ctx.user_text.lower().split())
@@ -159,12 +222,13 @@ def tool_check_availability(_args: dict) -> dict:
                 ],
             }
         )
+    remember_product_choices(_choice_rows(matched))
     return {"ok": True, "code": "availability", "products": payload}
 
 
 def tool_search_products(_args: dict) -> dict:
     ctx = get_ctx()
-    products = ctx.backend.list_products()
+    products = _catalogue(ctx.backend, ctx.user_text, search=True)
     matched = [item.product for item in parse_items(ctx.user_text, products)]
     if not matched:
         return tool_check_availability(_args)
@@ -186,11 +250,31 @@ def tool_search_products(_args: dict) -> dict:
                 ],
             }
         )
+    remember_product_choices(_choice_rows(matched))
     return {"ok": True, "code": "products", "products": payload}
 
 
 def tool_recommend(_args: dict) -> dict:
-    return catalogue_recommendations(get_ctx().backend, get_ctx().user_text)
+    result = catalogue_recommendations(get_ctx().backend, get_ctx().user_text)
+    if result.get("ok"):
+        rows = []
+        for product in result.get("products") or []:
+            label = product.get("variant_title") or "Default"
+            if label in {"Default", "Default Title"}:
+                choice = product["title"]
+                display = product["title"]
+            else:
+                choice = f"{product['title']} size {label}"
+                display = f"{product['title']} ({label})"
+            rows.append(
+                {
+                    "id": f"pick:{choice}"[:200],
+                    "title": display[:24],
+                    "description": format_money(product["price_cents"])[:72],
+                }
+            )
+        remember_product_choices(rows)
+    return result
 
 
 def tool_lookup(_args: dict) -> dict:
@@ -272,6 +356,17 @@ def tool_cancel(_args: dict) -> dict:
     draft = ctx.db.pending_draft(ctx.phone)
     if draft is None:
         return deny("no_draft", "There's no draft to cancel.")
+    deleter = getattr(ctx.backend, "delete_draft_order", None)
+    if deleter is not None and draft.get("shopify_draft_id"):
+        try:
+            deleter(draft["shopify_draft_id"])
+        except Exception as exc:  # noqa: BLE001 — cancelling locally still stands
+            ctx.db.audit(
+                ctx.phone,
+                "shopify.draft_delete",
+                "error",
+                {"message": str(exc)[:300], "draft_id": draft["shopify_draft_id"]},
+            )
     ctx.db.set_draft_status(draft["id"], "cancelled")
     ctx.db.audit(ctx.phone, "order.draft", "cancelled", {"draft_id": draft["id"]})
     return {"ok": True, "code": "cancelled", "message": "I cancelled that draft. Nothing was placed."}
@@ -418,8 +513,15 @@ def render_tool(name: str, result: dict, phone: str) -> str:
             item_text = ", ".join(
                 f"{line['quantity']} × {line['title']}" for line in order.get("lines") or []
             )
+            status = order.get("financial_status") or order.get("status")
+            extra = ""
+            fulfillment = (order.get("fulfillment_status") or "").lower()
+            if fulfillment and fulfillment not in {str(status).lower(), "open", "unfulfilled", "pending"}:
+                extra += f", fulfillment {fulfillment}"
+            if order.get("tracking"):
+                extra += f", tracking {order['tracking']}"
             lines.append(
-                f"Order #{order['number']} is {order.get('financial_status') or order.get('status')} "
+                f"Order #{order['number']} is {status}{extra} "
                 f"({format_money(order['total_cents'], order.get('currency') or 'USD')}"
                 + (f": {item_text}" if item_text else "")
                 + ")."
@@ -438,7 +540,12 @@ def render_tool(name: str, result: dict, phone: str) -> str:
             f"Here's a draft for {customer['name']} on {format_phone(customer['phone'])}. "
             f"Nothing has been placed yet.\n\n{lines}\n\n"
             f"Total {format_money(draft['total_cents'], draft['currency'])}.\n\n"
-            f"Reply YES to place this order. Confirmation token {draft['token']}."
+            f"Reply YES to place this order, or tap YES. Confirmation token {draft['token']}."
+            + (
+                " I opened this as a Shopify draft. YES completes it and emails the invoice."
+                if draft.get("shopify_draft_id")
+                else ""
+            )
         )
     if code in {"created", "duplicate", "duplicate_recent"}:
         if code != "created":
