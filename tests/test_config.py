@@ -14,8 +14,9 @@ def test_groq_is_the_default_provider():
     assert settings.use_mock_llm is True
     status = settings.llm_status()
     assert status["active"] == "mock-fallback"
-    assert status["embeddings"]["provider"] == "sentence-transformers"
-    assert "all-MiniLM-L6-v2" in status["embeddings"]["model"]
+    # No Qdrant URL: retrieval stays on the in-memory index.
+    assert settings.uses_memory_index() is True
+    assert status["embeddings"]["provider"] == "bm25"
 
 
 def test_groq_key_activates_the_live_model():
@@ -44,6 +45,25 @@ def test_explicit_base_url_overrides_the_preset():
     )
     assert settings.resolved_base_url() == "https://example.test/v1"
     assert settings.resolved_model() == "custom-model"
+
+
+def test_embedded_qdrant_stays_available_off_render(monkeypatch):
+    monkeypatch.delenv("RENDER", raising=False)
+    settings = Settings(vector_store="qdrant", qdrant_url="", embedding_provider="sentence-transformers")
+    assert settings.uses_memory_index() is False
+    assert settings.llm_status()["embeddings"]["provider"] == "sentence-transformers"
+    assert "all-MiniLM-L6-v2" in settings.llm_status()["embeddings"]["model"]
+
+
+def test_render_without_qdrant_url_uses_bm25(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    settings = Settings(
+        vector_store="qdrant",
+        qdrant_url="",
+        embedding_provider="sentence-transformers",
+    )
+    assert settings.uses_memory_index() is True
+    assert settings.llm_status()["embeddings"] == {"provider": "bm25", "model": "bm25", "device": "cpu"}
 
 
 def test_mock_mode_ignores_shopify_credentials():

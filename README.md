@@ -97,8 +97,10 @@ Copy `.env.example` to `.env`. Every provider is chosen with environment variabl
 | `LLM_PROVIDER` | `groq` (default), `openai`, `gemini`, `ollama`, or `mock` |
 | `LLM_MODEL` / `LLM_BASE_URL` | Optional overrides. Blank uses the provider preset. |
 | `GROQ_API_KEY` | Groq key. Empty key keeps the offline planner. |
-| `EMBEDDING_MODEL` | Default `sentence-transformers/all-MiniLM-L6-v2` on CPU |
-| `QDRANT_URL` | Blank uses embedded Qdrant. Set a URL for Qdrant server. |
+| `EMBEDDING_PROVIDER` | `sentence-transformers` (MiniLM) or `bm25` (in-memory, used on Render) |
+| `EMBEDDING_MODEL` | Default `sentence-transformers/all-MiniLM-L6-v2` on CPU when the provider is MiniLM |
+| `VECTOR_STORE` | `auto` uses BM25 when `QDRANT_URL` is empty. `qdrant` is the embedded file store. `memory` is always BM25. |
+| `QDRANT_URL` | Optional. Set only to point at a Qdrant server. Empty means no separate vector service. |
 | `SHOPIFY_STORE_DOMAIN` / `SHOPIFY_ADMIN_TOKEN` | Live Admin API. Ignored while `APP_MODE=mock`. |
 | `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_APP_SECRET` | Cloud API. Sends only in live mode. |
 | `N8N_*_WEBHOOK_URL` | Optional. A missed webhook does not roll back an order. |
@@ -116,6 +118,25 @@ Start the stack (the n8n UI is on port 5678), then in n8n choose **Import from f
 4. `04-error-handling-and-logging.json` — error trigger plus an error webhook, both appended to the agent audit log.
 
 Set n8n's `AGENT_BASE_URL` (Compose already sets `http://api:8091`). In the workflow settings, point the error workflow at **Harbor — Errors and audit log**. Activate the workflows, then set `N8N_ORDER_WEBHOOK_URL` to the production URL n8n shows for `harbor-order`.
+
+## Deploy to Render
+
+The free web service is one process. It binds to `$PORT`, serves the API and this sandbox from the same origin, and does not run Qdrant or n8n. Shopify and WhatsApp stay mocked (`APP_MODE=mock`). The only value you type in the dashboard is `GROQ_API_KEY`. Retrieval is an in-memory BM25 index so the instance stays inside the 512 MB limit. MiniLM and PyTorch are not installed on that build.
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sharmavijay07/whatsapp-shopify-ai-agent)
+
+Render reads `render.yaml` from the repo.
+
+| | |
+| --- | --- |
+| Build | `bash scripts/render-build.sh` |
+| Start | `uvicorn harbor.api:app --host 0.0.0.0 --port $PORT` |
+
+Required at deploy time: **`GROQ_API_KEY`** (`sync: false` in the blueprint, so Render asks you to paste it). The blueprint already sets `APP_MODE=mock`, `LLM_PROVIDER=groq`, `LLM_MODEL=openai/gpt-oss-120b`, `LLM_BASE_URL=https://api.groq.com/openai/v1`, `VECTOR_STORE=memory`, and `EMBEDDING_PROVIDER=bm25`.
+
+Optional, and unused while the public demo stays mocked: `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_ADMIN_TOKEN`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `N8N_ORDER_WEBHOOK_URL`, `N8N_ERROR_WEBHOOK_URL`, `N8N_NOTIFY_WEBHOOK_URL`, `N8N_SHARED_SECRET`, `QDRANT_URL`. Set `APP_MODE=live` only after those store and WhatsApp values exist. A `QDRANT_URL` plus `VECTOR_STORE=qdrant` and `EMBEDDING_PROVIDER=sentence-transformers` opts back into MiniLM, which does not fit the free instance.
+
+After the first deploy, open the Render URL. `GET /health` should show `shopify: mock`, `vector_store: memory`, and `llm.active: groq`.
 
 ## Deployment
 

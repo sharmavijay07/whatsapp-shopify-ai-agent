@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,11 +47,17 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     llm_max_tokens: int = 600
 
-    # Groq does not serve embeddings. Retrieval uses a local model.
+    # Groq does not serve embeddings.
+    # sentence-transformers = local MiniLM (needs the `local` extra and ~1 GB RAM).
+    # bm25 = in-memory keyword index that fits Render's 512 MB free instance.
+    embedding_provider: str = "sentence-transformers"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_device: str = "cpu"
 
-    vector_store: str = "qdrant"
+    # auto: Qdrant when QDRANT_URL is set, otherwise the in-memory index.
+    # qdrant: embedded file store when QDRANT_URL is empty (local demo and tests).
+    # memory: always the in-memory BM25 index. No Qdrant process.
+    vector_store: str = "auto"
     qdrant_url: str = ""
     qdrant_path: str = "./data/runtime/qdrant"
     qdrant_collection: str = "harbor_kb"
@@ -133,6 +140,24 @@ class Settings(BaseSettings):
             return False
         return bool(self.whatsapp_token.strip() and self.whatsapp_phone_number_id.strip())
 
+    def uses_memory_index(self) -> bool:
+        """True when retrieval must not load MiniLM or a Qdrant client.
+
+        Render's free web service has 512 MB of RAM. With no QDRANT_URL the
+        process uses an in-memory BM25 index. An explicit ``vector_store=qdrant``
+        off Render still uses the embedded file store.
+        """
+        store = self.vector_store.strip().lower()
+        embed = self.embedding_provider.strip().lower()
+        if store in {"memory", "bm25"} or embed == "bm25":
+            return True
+        on_render = os.environ.get("RENDER", "").lower() == "true"
+        if on_render and not self.qdrant_url.strip():
+            return True
+        if store == "qdrant":
+            return False
+        return not self.qdrant_url.strip()
+
     def knowledge_path(self) -> Path:
         if self.knowledge_dir.strip():
             return Path(self.knowledge_dir).expanduser()
@@ -155,11 +180,15 @@ class Settings(BaseSettings):
             "base_url": self.resolved_base_url(),
             "active": active,
             "reason": reason,
-            "embeddings": {
-                "provider": "sentence-transformers",
-                "model": self.embedding_model,
-                "device": self.embedding_device,
-            },
+            "embeddings": (
+                {"provider": "bm25", "model": "bm25", "device": "cpu"}
+                if self.uses_memory_index()
+                else {
+                    "provider": "sentence-transformers",
+                    "model": self.embedding_model,
+                    "device": self.embedding_device,
+                }
+            ),
         }
 
 

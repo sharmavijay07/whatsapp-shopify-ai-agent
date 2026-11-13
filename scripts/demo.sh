@@ -12,6 +12,8 @@ export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_TELEMETRY=1
 export APP_MODE="${APP_MODE:-mock}"
 export LLM_PROVIDER="${LLM_PROVIDER:-groq}"
+export VECTOR_STORE="${VECTOR_STORE:-qdrant}"
+export EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-sentence-transformers}"
 export PYTHONPATH="$ROOT/src"
 export API_INTERNAL_URL="${API_INTERNAL_URL:-http://127.0.0.1:8091}"
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from harbor.config import Settings, get_settings
@@ -58,7 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "shopify": "mock" if service.settings.shopify_is_mock else "live",
             "whatsapp": "live" if service.settings.whatsapp_is_live else "mock",
             "llm": status,
-            "vector_store": service.settings.vector_store,
+            "vector_store": service.rag.backend,
             "vector_points": service.rag.vector_count(),
         }
 
@@ -152,7 +154,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             handled += 0 if result.duplicate_inbound else 1
         return {"ok": True, "handled": handled}
 
+    _mount_sandbox_ui(app)
     return app
+
+
+def _mount_sandbox_ui(app: FastAPI) -> None:
+    """Serve the exported Next.js sandbox from this same process, when it exists."""
+    ui = Path(os.environ.get("SANDBOX_UI_DIR", "web/out"))
+    index = ui / "index.html"
+    if not index.is_file():
+        return
+    root = ui.resolve()
+
+    @app.get("/", include_in_schema=False)
+    def sandbox_index():
+        return FileResponse(index)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def sandbox_files(full_path: str):
+        if full_path.startswith(("api/", "webhooks/")) or full_path in {"health", "docs", "redoc", "openapi.json"}:
+            raise HTTPException(404)
+        candidate = (ui / full_path).resolve()
+        if root not in candidate.parents and candidate != root:
+            raise HTTPException(404)
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index)
 
 
 _app: FastAPI | None = None

@@ -22,22 +22,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function loadSandbox(phone: string) {
-  return request<Snapshot>(`/backend/api/sandbox?phone=${encodeURIComponent(phone)}`)
+  return request<Snapshot>(`/api/sandbox?phone=${encodeURIComponent(phone)}`)
 }
 
 export function sendChat(phone: string, text: string, name: string) {
-  return request<Snapshot>("/backend/api/chat", {
+  return request<Snapshot>("/api/chat", {
     method: "POST",
     body: JSON.stringify({ phone, text, name }),
   })
 }
 
 export function resetSandbox() {
-  return request<{ ok: boolean }>("/backend/api/sandbox/reset", { method: "POST" })
+  return request<{ ok: boolean }>("/api/sandbox/reset", { method: "POST" })
 }
 
 export function resolveEscalation(id: string) {
-  return request(`/backend/api/escalations/${encodeURIComponent(id)}/resolve`, { method: "POST" })
+  return request(`/api/escalations/${encodeURIComponent(id)}/resolve`, { method: "POST" })
 }
 
 export function loadHealth() {
@@ -48,5 +48,5 @@ export function loadHealth() {
     whatsapp: string
     vector_points: number
     llm: Snapshot["llm"]
-  }>("/backend/health")
+  }>("/health")
 }

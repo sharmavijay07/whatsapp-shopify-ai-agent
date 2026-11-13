@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.pop("RENDER", None)
 
 from pathlib import Path
 
@@ -19,6 +20,8 @@ def settings(tmp_path) -> Settings:
         app_mode="mock",
         llm_provider="mock",
         database_path=str(tmp_path / "harbor.db"),
+        vector_store="qdrant",
+        embedding_provider="sentence-transformers",
         qdrant_path=str(tmp_path / "qdrant"),
         knowledge_dir=str(ROOT / "src" / "harbor" / "knowledge"),
         max_order_value=500,

@@ -149,7 +149,9 @@ export function DemoConsole() {
         <div className="flex flex-wrap gap-2">
           <Badge>Shopify {mode}</Badge>
           <Badge variant="secondary">{brain}</Badge>
-          <Badge variant="outline">Local embeddings</Badge>
+          <Badge variant="outline">
+            {llm?.embeddings?.provider === "bm25" ? "In-memory BM25" : "Local embeddings"}
+          </Badge>
         </div>
       </header>
 

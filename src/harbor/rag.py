@@ -1,23 +1,26 @@
-"""Hybrid retrieval: local sentence-transformers vectors in Qdrant, plus keywords.
+"""Retrieval over the catalogue and shop policies.
 
-Groq does not offer an embeddings API, so the default embedder is
-sentence-transformers/all-MiniLM-L6-v2 running on CPU. No embedding key is read.
+Groq does not offer embeddings. Locally, sentence-transformers MiniLM vectors
+live in Qdrant. When no Qdrant URL is configured (and on Render's 512 MB free
+instance) retrieval falls back to an in-memory BM25 index. That path imports
+neither Qdrant nor PyTorch.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import math
 import re
 import threading
 import uuid
 from pathlib import Path
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
-
 from harbor.config import Settings
 from harbor.db import Database
+
+logger = logging.getLogger("harbor.rag")
 
 _MODEL = None
 _MODEL_NAME = ""
@@ -43,6 +46,56 @@ def tokenize(text: str) -> list[str]:
     return [_stem(token) for token in raw if token not in _STOP and len(token) > 1]
 
 
+class MemoryIndex:
+    """Okapi BM25 over the chunk list. Pure Python, a few hundred KB of RAM."""
+
+    def __init__(self) -> None:
+        self.k1 = 1.4
+        self.b = 0.75
+        self.doc_tokens: list[list[str]] = []
+        self.df: dict[str, int] = {}
+        self.avgdl = 0.0
+
+    def build(self, chunks: list[dict]) -> None:
+        self.doc_tokens = []
+        df: dict[str, int] = {}
+        for chunk in chunks:
+            tokens = tokenize(f"{chunk['title']} {chunk['text']}")
+            self.doc_tokens.append(tokens)
+            for token in set(tokens):
+                df[token] = df.get(token, 0) + 1
+        self.df = df
+        self.avgdl = (
+            sum(len(tokens) for tokens in self.doc_tokens) / len(self.doc_tokens)
+            if self.doc_tokens
+            else 0.0
+        )
+
+    def rank(self, query: str, chunks: list[dict]) -> list[tuple[float, str]]:
+        if len(self.doc_tokens) != len(chunks):
+            self.build(chunks)
+        query_tokens = tokenize(query)
+        total = len(chunks)
+        scored: list[tuple[float, str]] = []
+        for index, tokens in enumerate(self.doc_tokens):
+            counts: dict[str, int] = {}
+            for token in tokens:
+                counts[token] = counts.get(token, 0) + 1
+            length = len(tokens) or 1
+            score = 0.0
+            for term in query_tokens:
+                freq = counts.get(term, 0)
+                if not freq:
+                    continue
+                docs_with_term = self.df.get(term, 0)
+                idf = math.log(1.0 + (total - docs_with_term + 0.5) / (docs_with_term + 0.5))
+                denom = freq + self.k1 * (1 - self.b + self.b * length / (self.avgdl or 1.0))
+                score += idf * (freq * (self.k1 + 1)) / denom
+            scored.append((score, chunks[index]["id"]))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored
+
+
 def get_embedder(model_name: str, device: str):
     global _MODEL, _MODEL_NAME
     with _MODEL_LOCK:
@@ -59,22 +112,43 @@ class KnowledgeBase:
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
-        self.embedder = get_embedder(settings.embedding_model, settings.embedding_device)
+        self.chunks: list[dict] = []
+        self.client = None
+        self.embedder = None
+        self.dim = 0
+        self.collection = settings.qdrant_collection
+        self.memory = MemoryIndex()
+        if settings.uses_memory_index():
+            self.backend = "memory"
+            return
+        try:
+            self._init_qdrant()
+            self.backend = "qdrant"
+        except Exception as exc:  # noqa: BLE001 — MiniLM/Qdrant must not take down the free tier
+            logger.warning("Qdrant embeddings unavailable (%s). Using in-memory BM25.", exc)
+            self.backend = "memory"
+            self.client = None
+            self.embedder = None
+            self.dim = 0
+
+    def _init_qdrant(self) -> None:
+        from qdrant_client import QdrantClient
+
+        self.embedder = get_embedder(self.settings.embedding_model, self.settings.embedding_device)
         dimension = getattr(self.embedder, "get_embedding_dimension", None)
         if dimension is None:
             dimension = self.embedder.get_sentence_embedding_dimension
         self.dim = int(dimension())
-        if settings.qdrant_url.strip():
-            self.client = QdrantClient(url=settings.qdrant_url.strip(), prefer_grpc=False)
+        if self.settings.qdrant_url.strip():
+            self.client = QdrantClient(url=self.settings.qdrant_url.strip(), prefer_grpc=False)
         else:
-            path = Path(settings.qdrant_path)
+            path = Path(self.settings.qdrant_path)
             path.mkdir(parents=True, exist_ok=True)
             self.client = QdrantClient(path=str(path))
-        self.collection = settings.qdrant_collection
-        self.chunks: list[dict] = []
 
     def close(self) -> None:
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
 
     def load_markdown(self, directory: Path) -> list[dict]:
         documents = []
@@ -127,6 +201,13 @@ class KnowledgeBase:
             json.dumps(chunks, sort_keys=True).encode()
         ).hexdigest()
         self.chunks = chunks
+        if self.backend == "memory":
+            self.memory.build(chunks)
+            if chunks:
+                self.db.replace_chunks(chunks)
+                self.db.set_meta("kb_hash", digest)
+                self.db.set_meta("kb_model", "bm25")
+            return
         if (
             self.db.get_meta("kb_hash") == digest
             and self.db.get_meta("kb_model") == self.settings.embedding_model
@@ -153,6 +234,8 @@ class KnowledgeBase:
         return [row.tolist() for row in matrix]
 
     def _replace_collection(self, chunks: list[dict], vectors: list[list[float]]) -> None:
+        from qdrant_client.models import Distance, PointStruct, VectorParams
+
         if self.client.collection_exists(self.collection):
             self.client.delete_collection(self.collection)
         self.client.create_collection(
@@ -171,7 +254,9 @@ class KnowledgeBase:
         self.client.upsert(collection_name=self.collection, points=points)
 
     def vector_count(self) -> int:
-        if not self.client.collection_exists(self.collection):
+        if self.backend == "memory":
+            return len(self.chunks)
+        if self.client is None or not self.client.collection_exists(self.collection):
             return 0
         info = self.client.get_collection(self.collection)
         count = getattr(info, "points_count", None)
@@ -180,8 +265,12 @@ class KnowledgeBase:
     def search(self, query: str, k: int = 4) -> list[dict]:
         if not self.chunks:
             self.chunks = self.db.list_chunks()
+            if self.backend == "memory":
+                self.memory.build(self.chunks)
         if not self.chunks:
             return []
+        if self.backend == "memory":
+            return self._memory_search(query, k)
         vector_rank = self._vector_rank(query, limit=max(k * 3, 8))
         lexical_rank = self._lexical_rank(query)
         fused: dict[str, float] = {}
@@ -208,6 +297,32 @@ class KnowledgeBase:
                     "source": chunk["source"],
                     "kind": chunk["kind"],
                     "vector": round(float(vector_scores.get(chunk_id, 0.0)), 4),
+                    "lexical": round(float(lexical_scores.get(chunk_id, 0.0)), 4),
+                }
+            )
+        return hits
+
+    def _memory_search(self, query: str, k: int) -> list[dict]:
+        lexical_scores = dict(self._lexical_rank(query))
+        ranked = [(score, chunk_id) for score, chunk_id in self.memory.rank(query, self.chunks) if score > 0]
+        if not ranked:
+            ranked = [(lexical_scores.get(chunk["id"], 0.0), chunk["id"]) for chunk in self.chunks]
+            ranked = [item for item in ranked if item[0] > 0]
+            ranked.sort(key=lambda item: item[0], reverse=True)
+        by_id = {chunk["id"]: chunk for chunk in self.chunks}
+        hits = []
+        for _score, chunk_id in ranked[:k]:
+            chunk = by_id.get(chunk_id)
+            if not chunk:
+                continue
+            hits.append(
+                {
+                    "id": chunk["id"],
+                    "title": chunk["title"],
+                    "text": chunk["text"],
+                    "source": chunk["source"],
+                    "kind": chunk["kind"],
+                    "vector": 0.0,
                     "lexical": round(float(lexical_scores.get(chunk_id, 0.0)), 4),
                 }
             )
