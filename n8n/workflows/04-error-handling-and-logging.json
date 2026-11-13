@@ -1,0 +1,79 @@
+{
+  "name": "Harbor — Errors and audit log",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "d41c0c2e-1f4a-4e1a-9c11-0b1a0a000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 180]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "harbor-error",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "d41c0c2e-1f4a-4e1a-9c11-0b1a0a000002",
+      "name": "Error Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 420],
+      "webhookId": "harbor-error"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.body ?? $json;\nconst execution = raw.execution || {};\nconst message = raw.message || execution.error?.message || raw.error?.message || 'workflow error';\nconst phone = raw.phone || raw.verified_phone || null;\nreturn [{ json: { phone, action: 'error', outcome: 'error', detail: { message: String(message).slice(0, 500), workflow: execution.lastNodeExecuted || raw.workflow || null, at: new Date().toISOString() } } }];"
+      },
+      "id": "d41c0c2e-1f4a-4e1a-9c11-0b1a0a000003",
+      "name": "Format error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AGENT_BASE_URL || 'http://api:8091'}}/api/internal/audit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Harbor-Secret", "value": "={{$env.N8N_SHARED_SECRET || ''}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.phone, action: $json.action, outcome: $json.outcome, detail: $json.detail }) }}",
+        "options": { "timeout": 8000 }
+      },
+      "id": "d41c0c2e-1f4a-4e1a-9c11-0b1a0a000004",
+      "name": "Append audit log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { logged: true, phone: $json.phone || $('Format error').item.json.phone, at: new Date().toISOString() } }];"
+      },
+      "id": "d41c0c2e-1f4a-4e1a-9c11-0b1a0a000005",
+      "name": "Log line",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 300]
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[{ "node": "Format error", "type": "main", "index": 0 }]] },
+    "Error Webhook": { "main": [[{ "node": "Format error", "type": "main", "index": 0 }]] },
+    "Format error": { "main": [[{ "node": "Append audit log", "type": "main", "index": 0 }]] },
+    "Append audit log": { "main": [[{ "node": "Log line", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}

@@ -1,0 +1,56 @@
+# Mock mode by default. Set GROQ_API_KEY in the shell or a .env file
+# if you want the sandbox to plan with Groq instead of the offline planner.
+services:
+  api:
+    build: .
+    ports:
+      - "8091:8091"
+    environment:
+      APP_MODE: mock
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      LLM_MODEL: ${LLM_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      EMBEDDING_DEVICE: cpu
+      QDRANT_PATH: /app/data/runtime/qdrant
+      DATABASE_PATH: /app/data/runtime/harbor.db
+      MAX_ORDER_VALUE: ${MAX_ORDER_VALUE:-500}
+      N8N_ORDER_WEBHOOK_URL: ${N8N_ORDER_WEBHOOK_URL:-}
+      N8N_ERROR_WEBHOOK_URL: ${N8N_ERROR_WEBHOOK_URL:-}
+      N8N_NOTIFY_WEBHOOK_URL: ${N8N_NOTIFY_WEBHOOK_URL:-}
+      N8N_SHARED_SECRET: ${N8N_SHARED_SECRET:-}
+      CORS_ORIGINS: http://127.0.0.1:43123,http://localhost:43123
+    volumes:
+      - agent_data:/app/data
+
+  web:
+    build: ./web
+    ports:
+      - "43123:43123"
+    environment:
+      API_INTERNAL_URL: http://api:8091
+    depends_on:
+      - api
+
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      GENERIC_TIMEZONE: America/Los_Angeles
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: "false"
+      AGENT_BASE_URL: http://api:8091
+      N8N_SHARED_SECRET: ${N8N_SHARED_SECRET:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  agent_data:
+  n8n_data:

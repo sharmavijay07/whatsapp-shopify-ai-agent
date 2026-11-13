@@ -1,0 +1,120 @@
+{
+  "name": "Harbor — Order notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "harbor-notify",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000001",
+      "name": "Notify Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "harbor-notify"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst order = body.order || {};\nconst phone = body.verified_phone || (body.customer || {}).phone || '';\nconst total = ((order.total_cents ?? body.total_cents ?? 0) / 100).toFixed(2);\nconst text = `Harbor & Co. order #${order.number || ''} is in the shop. Total $${total}. Payment is pending — this chat does not charge a card.`;\nreturn [{ json: { phone, text, notify_whatsapp: body.notify_whatsapp === true, idempotency_key: body.idempotency_key || null } }];"
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000002",
+      "name": "Build message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "send",
+              "leftValue": "={{$json.notify_whatsapp}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000003",
+      "name": "Send on WhatsApp",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{$env.WHATSAPP_API_VERSION || 'v21.0'}}/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: String($json.phone).replace(/^\\+/, ''), type: 'text', text: { body: $json.text } }) }}",
+        "options": {}
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000004",
+      "name": "WhatsApp Cloud API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1020, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { phone: $json.phone, action: 'notification.skipped', outcome: 'skipped', detail: { reason: 'agent already replied in the chat', text: $json.text } } }];"
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000005",
+      "name": "Skip duplicate message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AGENT_BASE_URL || 'http://api:8091'}}/api/internal/audit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Harbor-Secret", "value": "={{$env.N8N_SHARED_SECRET || ''}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.phone || null, action: 'notification', outcome: 'logged', detail: $json }) }}",
+        "options": { "timeout": 8000 }
+      },
+      "id": "c31c0c2e-1f4a-4e1a-9c11-0b1a0a000006",
+      "name": "Log notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 300]
+    }
+  ],
+  "connections": {
+    "Notify Webhook": { "main": [[{ "node": "Build message", "type": "main", "index": 0 }]] },
+    "Build message": { "main": [[{ "node": "Send on WhatsApp", "type": "main", "index": 0 }]] },
+    "Send on WhatsApp": {
+      "main": [
+        [{ "node": "WhatsApp Cloud API", "type": "main", "index": 0 }],
+        [{ "node": "Skip duplicate message", "type": "main", "index": 0 }]
+      ]
+    },
+    "WhatsApp Cloud API": { "main": [[{ "node": "Log notification", "type": "main", "index": 0 }]] },
+    "Skip duplicate message": { "main": [[{ "node": "Log notification", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}

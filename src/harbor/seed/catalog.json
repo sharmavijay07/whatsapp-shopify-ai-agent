@@ -1,0 +1,116 @@
+{
+  "currency": "USD",
+  "products": [
+    {
+      "id": "prod_linen",
+      "title": "Coastal Linen Shirt",
+      "description": "A relaxed oyster-white linen shirt with a camp collar, mother-of-pearl buttons, and a slightly cropped hem. Washed so it is soft on the first wear. Made for warm sidewalks and cool offices.",
+      "tags": ["apparel", "linen", "shirt"],
+      "aliases": ["coastal linen shirt", "linen shirt", "linen shirts"],
+      "variants": [
+        {"id": "var_linen_s", "title": "S", "sku": "HLS-001-S", "price_cents": 6800, "inventory_qty": 4},
+        {"id": "var_linen_m", "title": "M", "sku": "HLS-001-M", "price_cents": 6800, "inventory_qty": 5},
+        {"id": "var_linen_l", "title": "L", "sku": "HLS-001-L", "price_cents": 6800, "inventory_qty": 3}
+      ]
+    },
+    {
+      "id": "prod_mug",
+      "title": "Driftwood Ceramic Mug",
+      "description": "A 12oz speckled stoneware mug in warm grey, glazed inside so coffee stays hot. Each one is a little different, like driftwood. Dishwasher safe.",
+      "tags": ["home", "ceramic", "gift"],
+      "aliases": ["driftwood ceramic mug", "ceramic mug", "mug", "mugs"],
+      "variants": [
+        {"id": "var_mug", "title": "Default", "sku": "HOM-014", "price_cents": 2400, "inventory_qty": 40}
+      ]
+    },
+    {
+      "id": "prod_throw",
+      "title": "Tidewool Throw Blanket",
+      "description": "A heavy merino-blend throw in tide blue, with a soft brushed face and fringe. Warm enough for a porch evening. Spot clean, or air it in the shade.",
+      "tags": ["home", "wool", "blanket"],
+      "aliases": ["tidewool throw", "tidewool throw blanket", "throw blanket", "wool throw", "blanket"],
+      "variants": [
+        {"id": "var_throw", "title": "Default", "sku": "HOM-022", "price_cents": 12800, "inventory_qty": 7}
+      ]
+    },
+    {
+      "id": "prod_tote",
+      "title": "Harbor Canvas Tote",
+      "description": "A 14oz natural canvas tote with a leather snap and an interior pocket sized for a book. Currently out of stock while the next dye lot is sewn.",
+      "tags": ["bags", "canvas"],
+      "aliases": ["harbor canvas tote", "canvas tote", "tote"],
+      "variants": [
+        {"id": "var_tote", "title": "Default", "sku": "BAG-004", "price_cents": 4200, "inventory_qty": 0}
+      ]
+    },
+    {
+      "id": "prod_candle",
+      "title": "Sea Salt Candle",
+      "description": "Soy wax, cotton wick, and a clean sea-salt and driftwood scent. Burns about 45 hours. A reliable small gift.",
+      "tags": ["home", "candle", "gift"],
+      "aliases": ["sea salt candle", "candle", "candles"],
+      "variants": [
+        {"id": "var_candle", "title": "Default", "sku": "HOM-031", "price_cents": 3200, "inventory_qty": 25}
+      ]
+    },
+    {
+      "id": "prod_jacket",
+      "title": "Mariner Denim Jacket",
+      "description": "A true-to-size indigo denim jacket with horn buttons and a corduroy collar. Unlined, so it layers over the linen shirt.",
+      "tags": ["apparel", "denim", "jacket"],
+      "aliases": ["mariner denim jacket", "denim jacket", "mariner jacket"],
+      "variants": [
+        {"id": "var_jacket_s", "title": "S", "sku": "HAP-208-S", "price_cents": 15800, "inventory_qty": 1},
+        {"id": "var_jacket_m", "title": "M", "sku": "HAP-208-M", "price_cents": 15800, "inventory_qty": 2},
+        {"id": "var_jacket_l", "title": "L", "sku": "HAP-208-L", "price_cents": 15800, "inventory_qty": 1}
+      ]
+    },
+    {
+      "id": "prod_bowl",
+      "title": "Pebble Stoneware Bowl",
+      "description": "A shallow everyday bowl in sand glaze, good for noodles or fruit. Stacks cleanly. A small gift that gets used.",
+      "tags": ["home", "ceramic", "gift"],
+      "aliases": ["pebble stoneware bowl", "stoneware bowl", "pebble bowl", "bowl"],
+      "variants": [
+        {"id": "var_bowl", "title": "Default", "sku": "HOM-044", "price_cents": 3600, "inventory_qty": 18}
+      ]
+    },
+    {
+      "id": "prod_shell",
+      "title": "Northwind Rain Shell",
+      "description": "A packable unisex rain shell in kelp green. Fully taped seams, one fit with an adjustable hood. Ships in one size.",
+      "tags": ["apparel", "outerwear", "rain"],
+      "aliases": ["northwind rain shell", "rain shell", "northwind", "rain jacket"],
+      "variants": [
+        {"id": "var_shell", "title": "Default", "sku": "HAP-310", "price_cents": 19800, "inventory_qty": 6}
+      ]
+    }
+  ],
+  "customers": [
+    {
+      "id": "cus_samira",
+      "name": "Samira Okonkwo",
+      "phone": "+14155550198",
+      "email": "samira@example.com"
+    }
+  ],
+  "orders": [
+    {
+      "id": "ord_seed_10421",
+      "number": "10421",
+      "customer_id": "cus_samira",
+      "phone": "+14155550198",
+      "status": "open",
+      "financial_status": "paid",
+      "idempotency_key": "seed_10421",
+      "lines": [
+        {
+          "variant_id": "var_candle",
+          "title": "Sea Salt Candle",
+          "quantity": 1,
+          "unit_price_cents": 3200
+        }
+      ]
+    }
+  ]
+}

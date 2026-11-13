@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-outfit);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+:root {
+  --background: #efe6d6;
+  --foreground: #1c1915;
+  --card: #f7f1e6;
+  --card-foreground: #1c1915;
+  --primary: #143f38;
+  --primary-foreground: #f4ecdf;
+  --secondary: #e7dcc8;
+  --secondary-foreground: #1c1915;
+  --muted: #e7dcc8;
+  --muted-foreground: #5e574c;
+  --accent: #e5f3ec;
+  --accent-foreground: #143f38;
+  --destructive: #c85a3e;
+  --border: #ddcbb3;
+  --ring: #143f38;
+  --radius: 0.85rem;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(20, 63, 56, 0.08), transparent 50%),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-outfit), sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-fraunces), Georgia, serif;
+}
+
+.chat-paper {
+  background-color: #f3eadc;
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(20, 63, 56, 0.05), transparent 28%),
+    radial-gradient(circle at 80% 0%, rgba(200, 90, 62, 0.06), transparent 24%);
+}

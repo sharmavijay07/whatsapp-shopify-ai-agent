@@ -1,0 +1,8 @@
+.venv
+.cache
+data/runtime
+web/node_modules
+web/.next
+**/__pycache__
+.git
+terminals

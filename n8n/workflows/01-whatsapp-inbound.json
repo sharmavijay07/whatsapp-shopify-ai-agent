@@ -1,0 +1,116 @@
+{
+  "name": "Harbor — WhatsApp inbound",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "harbor-whatsapp",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000001",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "harbor-whatsapp"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nreturn [{ json: { forwarded: true, receivedAt: new Date().toISOString(), body } }];"
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000002",
+      "name": "Keep raw payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AGENT_BASE_URL || 'http://api:8091'}}/webhooks/whatsapp",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "response": { "response": { "neverError": true } },
+          "timeout": 20000
+        }
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000003",
+      "name": "Forward to agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [740, 300],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "wa-ok",
+              "leftValue": "={{ $json.statusCode || $json.ok }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000004",
+      "name": "Agent responded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { level: 'info', event: 'whatsapp.forwarded', detail: $json } }];"
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000005",
+      "name": "Log forward",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AGENT_BASE_URL || 'http://api:8091'}}/api/internal/audit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Harbor-Secret", "value": "={{$env.N8N_SHARED_SECRET || ''}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: null, action: 'whatsapp.forward_failed', outcome: 'error', detail: $json }) }}",
+        "options": { "timeout": 8000 }
+      },
+      "id": "8a1c0c2e-1f4a-4e1a-9c11-0b1a0a000006",
+      "name": "Log forward failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1240, 420]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": { "main": [[{ "node": "Keep raw payload", "type": "main", "index": 0 }]] },
+    "Keep raw payload": { "main": [[{ "node": "Forward to agent", "type": "main", "index": 0 }]] },
+    "Forward to agent": { "main": [[{ "node": "Agent responded", "type": "main", "index": 0 }]] },
+    "Agent responded": {
+      "main": [
+        [{ "node": "Log forward", "type": "main", "index": 0 }],
+        [{ "node": "Log forward failure", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}

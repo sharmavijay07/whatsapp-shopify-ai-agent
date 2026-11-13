@@ -1,0 +1,159 @@
+{
+  "name": "Harbor — Order processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "harbor-order",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000001",
+      "name": "Order Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 320],
+      "webhookId": "harbor-order"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst confirmation = body.confirmation || {};\nconst customer = body.customer || {};\nconst limits = body.limits || {};\nconst problems = [];\nif (confirmation.explicit !== true) problems.push('missing explicit confirmation');\nif (!body.idempotency_key) problems.push('missing idempotency key');\nif (!customer.phone || customer.phone !== body.verified_phone) problems.push('phone is not the verified WhatsApp sender');\nif (typeof body.total_cents !== 'number' || body.total_cents > (limits.max_order_value_cents ?? 0)) {\n  problems.push('order value missing or over the automatic limit');\n}\nreturn [{\n  json: {\n    ok: problems.length === 0,\n    problems,\n    already_created: body.already_created === true,\n    notify_whatsapp: body.notify_whatsapp === true,\n    idempotency_key: body.idempotency_key || null,\n    verified_phone: body.verified_phone || null,\n    customer,\n    order: body.order || null,\n    total_cents: body.total_cents ?? null,\n    summary: problems.length ? problems.join('; ') : 'order event accepted'\n  }\n}];"
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000002",
+      "name": "Re-check safeguards",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "order-ok",
+              "leftValue": "={{$json.ok}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000003",
+      "name": "Safeguards passed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [740, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "already",
+              "leftValue": "={{$json.already_created}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000004",
+      "name": "Already created by agent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [980, 180]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{$env.SHOPIFY_STORE_DOMAIN}}/admin/api/{{$env.SHOPIFY_API_VERSION || '2026-10'}}/graphql.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Shopify-Access-Token", "value": "={{$env.SHOPIFY_ADMIN_TOKEN}}" },
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Idempotency-Key", "value": "={{$json.idempotency_key}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: 'mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) { orderCreate(order: $order, options: $options) { userErrors { field message } order { id name } } }', variables: { order: { lineItems: (($json.order && $json.order.lines) || []).map((line) => ({ variantId: line.variant_id, quantity: line.quantity })), financialStatus: 'PENDING', tags: ['harbor-agent', 'whatsapp'] }, options: { inventoryBehaviour: 'DECREMENT_OBEYING_POLICY', sendReceipt: false, sendFulfillmentReceipt: false } } }) }}",
+        "options": {}
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000005",
+      "name": "Create Shopify order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { action: 'order.accepted', outcome: 'success', phone: $json.verified_phone, detail: { idempotency_key: $json.idempotency_key, order: $json.order, skipped_shopify_write: true } } }];"
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000006",
+      "name": "Accept existing order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { action: 'order.rejected', outcome: 'denied', phone: $json.verified_phone, detail: { problems: $json.problems, idempotency_key: $json.idempotency_key } } }];"
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000007",
+      "name": "Reject order event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AGENT_BASE_URL || 'http://api:8091'}}/api/internal/audit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Harbor-Secret", "value": "={{$env.N8N_SHARED_SECRET || ''}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ phone: $json.phone, action: $json.action, outcome: $json.outcome, detail: $json.detail || {} }) }}",
+        "options": { "timeout": 8000 }
+      },
+      "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000008",
+      "name": "Write audit log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1480, 280]
+    }
+  ],
+  "connections": {
+    "Order Webhook": { "main": [[{ "node": "Re-check safeguards", "type": "main", "index": 0 }]] },
+    "Re-check safeguards": { "main": [[{ "node": "Safeguards passed", "type": "main", "index": 0 }]] },
+    "Safeguards passed": {
+      "main": [
+        [{ "node": "Already created by agent", "type": "main", "index": 0 }],
+        [{ "node": "Reject order event", "type": "main", "index": 0 }]
+      ]
+    },
+    "Already created by agent": {
+      "main": [
+        [{ "node": "Accept existing order", "type": "main", "index": 0 }],
+        [{ "node": "Create Shopify order", "type": "main", "index": 0 }]
+      ]
+    },
+    "Accept existing order": { "main": [[{ "node": "Write audit log", "type": "main", "index": 0 }]] },
+    "Create Shopify order": { "main": [[{ "node": "Write audit log", "type": "main", "index": 0 }]] },
+    "Reject order event": { "main": [[{ "node": "Write audit log", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": true },
+  "tags": []
+}
