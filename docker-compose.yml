@@ -46,6 +46,7 @@ services:
       N8N_PROTOCOL: http
       WEBHOOK_URL: http://localhost:5678/
       N8N_SECURE_COOKIE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
       AGENT_BASE_URL: http://api:8091
       N8N_SHARED_SECRET: ${N8N_SHARED_SECRET:-}
     volumes:

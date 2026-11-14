@@ -76,7 +76,8 @@ def prepare_draft(
             "order_paused",
             "A specialist has this chat. I won't place or draft an order until they close the handoff.",
         )
-    products = backend.list_products()
+    fresh = getattr(backend, "list_products_fresh", None)
+    products = fresh() if fresh is not None else backend.list_products()
     requests = parse_items(text, products)
     if not requests:
         return deny(
@@ -151,6 +152,33 @@ def prepare_draft(
             )
         customer = backend.create_customer(name=name, phone=phone, email=email_in(text))
         created_customer = True
+    previous = db.pending_draft(phone)
+    if previous and previous.get("shopify_draft_id"):
+        deleter = getattr(backend, "delete_draft_order", None)
+        if deleter is not None:
+            try:
+                deleter(previous["shopify_draft_id"])
+            except StoreError as exc:
+                db.audit(
+                    phone,
+                    "shopify.draft_delete",
+                    "error",
+                    {"message": exc.message, "draft_id": previous["shopify_draft_id"]},
+                )
+    shopify_draft_id = ""
+    opener = getattr(backend, "open_draft_order", None)
+    if opener is not None:
+        try:
+            remote = opener(
+                customer=customer,
+                lines=lines,
+                email=customer.get("email") or "",
+                note="Harbor agent draft. Not an order until the customer replies YES on WhatsApp.",
+            )
+        except StoreError as exc:
+            db.audit(phone, "order.denied", "error", {"code": exc.code, "message": exc.message})
+            return deny(exc.code, exc.message + " I did not open a Shopify draft.")
+        shopify_draft_id = remote["id"]
     draft = db.create_draft(
         id=uid("draft"),
         phone=phone,
@@ -161,6 +189,7 @@ def prepare_draft(
         currency=currency,
         created_turn_id=turn_id,
         ttl_minutes=ttl_minutes,
+        shopify_draft_id=shopify_draft_id,
     )
     db.audit(
         phone,
@@ -300,16 +329,23 @@ def place_order(
             "order": existing,
             "message": f"Order #{existing['number']} was already placed for this confirmation. I did not create another.",
         }
+    recipient = (customer.get("email") or "").strip() or email_in(text)
+    order_kwargs = {
+        "id": uid("ord"),
+        "customer_id": customer["id"],
+        "phone": phone,
+        "lines": resolved_lines,
+        "currency": currency,
+        "idempotency_key": key,
+        "confirmation_token": draft["token"],
+    }
+    completer = getattr(backend, "complete_draft_order", None)
+    draft_gid = (draft.get("shopify_draft_id") or "").strip()
     try:
-        order = backend.create_order(
-            id=uid("ord"),
-            customer_id=customer["id"],
-            phone=phone,
-            lines=resolved_lines,
-            currency=currency,
-            idempotency_key=key,
-            confirmation_token=draft["token"],
-        )
+        if completer is not None and draft_gid:
+            order = completer(shopify_draft_id=draft_gid, email=recipient, **order_kwargs)
+        else:
+            order = backend.create_order(**order_kwargs)
     except StoreError as exc:
         db.audit(phone, "order.denied", "error", {"code": exc.code, "message": exc.message})
         return deny(exc.code, exc.message + " Nothing else was changed.")
@@ -347,8 +383,10 @@ def recommend_products(backend, text: str) -> dict:
     from harbor.rag import tokenize
 
     interest = set(tokenize(text))
+    fresh = getattr(backend, "list_products_fresh", None)
+    catalogue = fresh() if fresh is not None else backend.list_products()
     scored = []
-    for product in backend.list_products():
+    for product in catalogue:
         available = [variant for variant in product["variants"] if variant["inventory_qty"] > 0]
         if not available:
             continue
@@ -386,6 +424,7 @@ def recommend_products(backend, text: str) -> dict:
                 "price_cents": variant["price_cents"],
                 "inventory_qty": variant["inventory_qty"],
                 "description": product["description"],
+                "variant_title": variant["title"],
                 "reason": product["description"].split(".")[0] + ".",
             }
         )

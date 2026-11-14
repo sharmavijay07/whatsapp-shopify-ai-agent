@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Populate a Shopify Partner development store with the Harbor demo catalogue.
+
+Reads SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_TOKEN from the environment or .env.
+APP_MODE can stay mock. When PUBLIC_BASE_URL is a public https URL, this also
+registers orders/updated and fulfillment webhooks.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from harbor.shopify_seed import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

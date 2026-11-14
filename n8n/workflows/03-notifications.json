@@ -113,6 +113,7 @@
     "Skip duplicate message": { "main": [[{ "node": "Log notification", "type": "main", "index": 0 }]] }
   },
   "pinData": {},
+  "active": false,
   "settings": { "executionOrder": "v1" },
   "staticData": null,
   "meta": { "templateCredsSetupCompleted": true },

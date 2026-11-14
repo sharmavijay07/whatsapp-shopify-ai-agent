@@ -1,4 +1,7 @@
-# Render free web service: one process, 512 MB, no Qdrant and no n8n.
+# Render free web service: one Python process, 512 MB.
+# Shopify, WhatsApp, Gmail, and Qdrant stay off until Don sets the sync:false
+# values in the dashboard and switches APP_MODE to live. The optional n8n
+# service does not auto-deploy; the agent runs without it.
 # https://render.com/docs/blueprint-spec
 services:
   - type: web
@@ -13,6 +16,7 @@ services:
         value: "3.12.6"
       - key: APP_MODE
         value: mock
+        sync: false
       - key: LLM_PROVIDER
         value: groq
       - key: LLM_MODEL
@@ -21,9 +25,98 @@ services:
         value: https://api.groq.com/openai/v1
       - key: VECTOR_STORE
         value: memory
+        sync: false
       - key: EMBEDDING_PROVIDER
         value: bm25
+        sync: false
+      - key: EMBEDDING_MODEL
+        sync: false
+      - key: EMBEDDING_API_URL
+        sync: false
+      - key: EMBEDDING_API_KEY
+        sync: false
       - key: SANDBOX_UI_DIR
         value: web/out
+      - key: PUBLIC_BASE_URL
+        value: https://whatsapp-shopify-ai-agent.onrender.com
+        sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: SHOPIFY_STORE_DOMAIN
+        sync: false
+      - key: SHOPIFY_ADMIN_TOKEN
+        sync: false
+      - key: SHOPIFY_API_VERSION
+        value: "2026-10"
+      - key: SHOPIFY_WEBHOOK_SECRET
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_API_VERSION
+        value: v21.0
+      - key: WHATSAPP_STATUS_TEMPLATE
+        value: harbor_order_status
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: OWNER_EMAIL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: harbor_kb
+      - key: N8N_ORDER_WEBHOOK_URL
+        sync: false
+      - key: N8N_ERROR_WEBHOOK_URL
+        sync: false
+      - key: N8N_NOTIFY_WEBHOOK_URL
+        sync: false
+      - key: N8N_SHARED_SECRET
+        sync: false
+
+  # Optional. autoDeployTrigger: off so a Blueprint sync does not boot n8n until
+  # you deploy this service yourself. n8n Cloud's free trial is the other
+  # free option and keeps workflows across restarts; this container's disk
+  # is ephemeral on the free plan. The agent does not need either one.
+  - type: web
+    name: harbor-n8n
+    runtime: docker
+    plan: free
+    dockerfilePath: ./n8n/Dockerfile
+    dockerContext: ./n8n
+    healthCheckPath: /healthz
+    autoDeployTrigger: off
+    envVars:
+      - key: GENERIC_TIMEZONE
+        value: America/Los_Angeles
+      - key: N8N_DIAGNOSTICS_ENABLED
+        value: "false"
+      - key: N8N_BLOCK_ENV_ACCESS_IN_NODE
+        value: "false"
+      - key: N8N_SECURE_COOKIE
+        value: "false"
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      - key: AGENT_BASE_URL
+        value: https://whatsapp-shopify-ai-agent.onrender.com
+      - key: WEBHOOK_URL
+        sync: false
+      - key: N8N_EDITOR_BASE_URL
+        sync: false
+      - key: N8N_SHARED_SECRET
+        sync: false
+      - key: SHOPIFY_STORE_DOMAIN
+        sync: false
+      - key: SHOPIFY_ADMIN_TOKEN
+        sync: false
+      - key: SHOPIFY_API_VERSION
+        value: "2026-10"

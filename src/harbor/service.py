@@ -12,6 +12,8 @@ from harbor.backend import MockShopify
 from harbor.catalog import product_documents
 from harbor.config import Settings
 from harbor.db import Database
+from harbor.mailer import Mailer
+from harbor.money import format_money
 from harbor.n8n_client import N8NClient
 from harbor.parsing import is_explicit_confirmation
 from harbor.phone import PhoneError, normalize_phone
@@ -19,6 +21,7 @@ from harbor.rag import KnowledgeBase
 from harbor.safeguards import scrub_false_order_claim
 from harbor.service_ids import uid
 from harbor.shopify_live import LiveShopify
+from harbor.shopify_webhooks import normalize_shopify_webhook
 from harbor.whatsapp import WhatsAppClient
 
 logger = logging.getLogger("harbor.service")
@@ -49,7 +52,7 @@ class TurnResult:
 
 
 class AgentService:
-    def __init__(self, settings: Settings, db: Database, backend, rag: KnowledgeBase, agent: HarborAgent, whatsapp: WhatsAppClient, n8n: N8NClient):
+    def __init__(self, settings: Settings, db: Database, backend, rag: KnowledgeBase, agent: HarborAgent, whatsapp: WhatsAppClient, n8n: N8NClient, mailer: Mailer):
         self.settings = settings
         self.db = db
         self.backend = backend
@@ -57,9 +60,10 @@ class AgentService:
         self.agent = agent
         self.whatsapp = whatsapp
         self.n8n = n8n
+        self.mailer = mailer
 
     def close(self) -> None:
-        for resource in (self.rag, self.whatsapp, self.n8n, self.backend, self.db):
+        for resource in (self.rag, self.whatsapp, self.n8n, self.mailer, self.backend, self.db):
             closer = getattr(resource, "close", None)
             if closer:
                 closer()
@@ -178,11 +182,13 @@ class AgentService:
                         "name": (ctx.customer or {}).get("name"),
                         "phone": phone,
                     },
+                    "shopify_draft_id": (ctx.order_result.get("draft") or {}).get("shopify_draft_id") or "",
                     "order": {
                         "id": ctx.created_order["id"],
                         "number": ctx.created_order["number"],
                         "total_cents": ctx.created_order["total_cents"],
                         "lines": ctx.created_order.get("lines") or [],
+                        "shopify_draft_id": (ctx.order_result.get("draft") or {}).get("shopify_draft_id") or "",
                     },
                     "total_cents": ctx.created_order["total_cents"],
                     "limits": {"max_order_value_cents": self.settings.max_order_value_cents},
@@ -199,9 +205,34 @@ class AgentService:
                     "message": ctx.safeguard.get("message"),
                 }
             )
+        if created_new and ctx.created_order is not None:
+            customer = ctx.customer or {}
+            self.mailer.order_confirmation(
+                phone=phone,
+                number=str(ctx.created_order.get("number") or ""),
+                total=format_money(
+                    ctx.created_order.get("total_cents") or 0,
+                    ctx.created_order.get("currency") or self.settings.currency,
+                ),
+                customer_email=customer.get("email") or "",
+                customer_name=customer.get("name") or "",
+                invoice_sent=ctx.created_order.get("invoice_sent"),
+            )
+        if ctx.extra.get("escalation_opened") and ctx.escalation:
+            self.mailer.handoff_alert(
+                phone=phone,
+                reason=ctx.extra.get("escalation_reason") or text,
+                escalation_id=ctx.escalation["id"],
+            )
         if channel == "whatsapp" and reply:
             try:
-                self.whatsapp.send_text(phone, reply)
+                rows = ctx.extra.get("wa_list") or []
+                if ctx.draft and not created_new:
+                    self.whatsapp.send_reply_buttons(phone, reply)
+                elif len(rows) >= 2:
+                    self.whatsapp.send_product_list(phone, reply, rows)
+                else:
+                    self.whatsapp.send_text(phone, reply)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("whatsapp send failed")
                 self.db.audit(phone, "whatsapp.send", "error", {"error": str(exc)[:300]})
@@ -246,6 +277,64 @@ class AgentService:
     def resolve_escalation(self, escalation_id: str) -> dict | None:
         return self.db.resolve_escalation(escalation_id)
 
+    def notify_order_change(self, topic: str, payload: dict) -> dict:
+        """Shopify orders/updated and fulfillment webhooks. Template + email, never a session message."""
+        event = normalize_shopify_webhook(topic, payload)
+        order = self.db.find_order_for_shopify(
+            number=event["number"],
+            shopify_id=event["shopify_id"],
+        )
+        phone = event["phone"] or (order or {}).get("phone") or ""
+        email = event["email"] or (order or {}).get("email") or ""
+        if order and not email:
+            customer = self.db.get_customer(order["customer_id"]) if order.get("customer_id") else None
+            email = (customer or {}).get("email") or ""
+        number = event["number"] or (order or {}).get("number") or ""
+        if order:
+            financial = event["financial_status"] or None
+            fulfillment = event["fulfillment_status"] or None
+            self.db.update_order_progress(
+                order["id"],
+                status=fulfillment,
+                financial_status=financial,
+            )
+        normalized = ""
+        if phone:
+            try:
+                normalized = normalize_phone(phone)
+            except PhoneError:
+                normalized = ""
+        if normalized:
+            self.whatsapp.send_template(
+                normalized,
+                self.settings.whatsapp_status_template,
+                [number or "your order", event["status_label"], event["detail"]],
+            )
+        self.mailer.status_update(
+            phone=normalized or phone,
+            number=number or "your order",
+            status_label=event["status_label"],
+            detail=event["detail"],
+            customer_email=email,
+        )
+        self.db.audit(
+            normalized or phone or None,
+            "order.status_notified",
+            "success",
+            {
+                "topic": topic,
+                "number": number,
+                "status": event["status_label"],
+                "email": email,
+            },
+        )
+        return {
+            "phone": normalized or phone,
+            "number": number,
+            "status": event["status_label"],
+            "email": email,
+        }
+
 
 def build_service(settings: Settings) -> AgentService:
     db = Database(settings.database_path)
@@ -262,12 +351,7 @@ def build_service(settings: Settings) -> AgentService:
         logger.exception("product documents skipped")
     rag.ensure(documents)
     agent = HarborAgent(settings, db, backend, rag)
-    return AgentService(
-        settings,
-        db,
-        backend,
-        rag,
-        agent,
-        WhatsAppClient(settings, db),
-        N8NClient(settings, db),
-    )
+    whatsapp = WhatsAppClient(settings, db)
+    n8n = N8NClient(settings, db)
+    mailer = Mailer(settings, db)
+    return AgentService(settings, db, backend, rag, agent, whatsapp, n8n, mailer)

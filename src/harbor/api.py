@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from pydantic import BaseModel, Field
 from harbor.config import Settings, get_settings
 from harbor.phone import PhoneError
 from harbor.service import AgentService, build_service
+from harbor.shopify_webhooks import verify_shopify_hmac
 from harbor.whatsapp import extract_messages, verify_signature
 
 logger = logging.getLogger("harbor.api")
@@ -62,6 +64,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "llm": status,
             "vector_store": service.rag.backend,
             "vector_points": service.rag.vector_count(),
+            "email": "live" if service.settings.email_is_configured else "demo",
+            "n8n": "configured" if service.settings.n8n_configured else "off",
         }
 
     @app.get("/api/meta")
@@ -153,6 +157,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pass
             handled += 0 if result.duplicate_inbound else 1
         return {"ok": True, "handled": handled}
+
+    @app.post("/webhooks/shopify")
+    async def shopify_webhook(request: Request) -> dict:
+        service: AgentService = app.state.service
+        body = await request.body()
+        secret = service.settings.shopify_webhook_secret
+        if not verify_shopify_hmac(body, request.headers.get("x-shopify-hmac-sha256"), secret):
+            raise HTTPException(401, "Bad signature.")
+        topic = (request.headers.get("x-shopify-topic") or "").strip()
+        webhook_id = (request.headers.get("x-shopify-webhook-id") or "").strip()
+        if webhook_id and service.db.seen_inbound(webhook_id):
+            return {"ok": True, "duplicate": True}
+        try:
+            payload = json.loads(body.decode() or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, "Expected a JSON body.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Expected a JSON object.")
+        if topic not in {"orders/updated", "fulfillments/create", "fulfillments/update"}:
+            if webhook_id:
+                service.db.remember_inbound(webhook_id, "")
+            return {"ok": True, "ignored": topic}
+        result = service.notify_order_change(topic, payload)
+        if webhook_id:
+            service.db.remember_inbound(webhook_id, result.get("phone") or "")
+        return {"ok": True, **result}
 
     _mount_sandbox_ui(app)
     return app

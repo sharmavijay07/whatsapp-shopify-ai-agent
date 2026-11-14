@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body ?? $json;\nconst confirmation = body.confirmation || {};\nconst customer = body.customer || {};\nconst limits = body.limits || {};\nconst problems = [];\nif (confirmation.explicit !== true) problems.push('missing explicit confirmation');\nif (!body.idempotency_key) problems.push('missing idempotency key');\nif (!customer.phone || customer.phone !== body.verified_phone) problems.push('phone is not the verified WhatsApp sender');\nif (typeof body.total_cents !== 'number' || body.total_cents > (limits.max_order_value_cents ?? 0)) {\n  problems.push('order value missing or over the automatic limit');\n}\nreturn [{\n  json: {\n    ok: problems.length === 0,\n    problems,\n    already_created: body.already_created === true,\n    notify_whatsapp: body.notify_whatsapp === true,\n    idempotency_key: body.idempotency_key || null,\n    verified_phone: body.verified_phone || null,\n    customer,\n    order: body.order || null,\n    total_cents: body.total_cents ?? null,\n    summary: problems.length ? problems.join('; ') : 'order event accepted'\n  }\n}];"
+        "jsCode": "const body = $json.body ?? $json;\nconst confirmation = body.confirmation || {};\nconst customer = body.customer || {};\nconst limits = body.limits || {};\nconst problems = [];\nif (confirmation.explicit !== true) problems.push('missing explicit confirmation');\nif (!body.idempotency_key) problems.push('missing idempotency key');\nif (!customer.phone || customer.phone !== body.verified_phone) problems.push('phone is not the verified WhatsApp sender');\nif (typeof body.total_cents !== 'number' || body.total_cents > (limits.max_order_value_cents ?? 0)) {\n  problems.push('order value missing or over the automatic limit');\n}\nreturn [{\n  json: {\n    ok: problems.length === 0,\n    problems,\n    already_created: body.already_created === true,\n    shopify_draft_id: body.shopify_draft_id || (body.order && body.order.shopify_draft_id) || null,\n    notify_whatsapp: body.notify_whatsapp === true,\n    idempotency_key: body.idempotency_key || null,\n    verified_phone: body.verified_phone || null,\n    customer,\n    order: body.order || null,\n    total_cents: body.total_cents ?? null,\n    summary: problems.length ? problems.join('; ') : 'order event accepted'\n  }\n}];"
       },
       "id": "b21c0c2e-1f4a-4e1a-9c11-0b1a0a000002",
       "name": "Re-check safeguards",
@@ -152,6 +152,7 @@
     "Reject order event": { "main": [[{ "node": "Write audit log", "type": "main", "index": 0 }]] }
   },
   "pinData": {},
+  "active": false,
   "settings": { "executionOrder": "v1" },
   "staticData": null,
   "meta": { "templateCredsSetupCompleted": true },

@@ -50,15 +50,25 @@ class Settings(BaseSettings):
     # Groq does not serve embeddings.
     # sentence-transformers = local MiniLM (needs the `local` extra and ~1 GB RAM).
     # bm25 = in-memory keyword index that fits Render's 512 MB free instance.
+    # bm25 fits Render's 512 MB instance.
+    # sentence-transformers is local MiniLM (the `local` extra, too heavy for free Render).
+    # fastembed is a small ONNX model (optional `vectors` extra). It falls back to BM25
+    # if the package is missing or the model will not load.
+    # hosted calls an OpenAI-compatible embeddings API (Jina's free tier is the one
+    # that fits free Render memory). Set EMBEDDING_API_URL and EMBEDDING_API_KEY.
     embedding_provider: str = "sentence-transformers"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_device: str = "cpu"
+    embedding_api_url: str = ""
+    embedding_api_key: str = ""
 
     # auto: Qdrant when QDRANT_URL is set, otherwise the in-memory index.
-    # qdrant: embedded file store when QDRANT_URL is empty (local demo and tests).
+    # qdrant: embedded file store when QDRANT_URL is empty (local demo and tests),
+    # or Qdrant Cloud when QDRANT_URL and QDRANT_API_KEY are set.
     # memory: always the in-memory BM25 index. No Qdrant process.
     vector_store: str = "auto"
     qdrant_url: str = ""
+    qdrant_api_key: str = ""
     qdrant_path: str = "./data/runtime/qdrant"
     qdrant_collection: str = "harbor_kb"
 
@@ -68,12 +78,21 @@ class Settings(BaseSettings):
     shopify_store_domain: str = ""
     shopify_admin_token: str = ""
     shopify_api_version: str = "2026-10"
+    # Custom app API secret key. Shopify signs webhooks with this, not the Admin token.
+    shopify_webhook_secret: str = ""
 
     whatsapp_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_verify_token: str = "harbor-verify"
     whatsapp_app_secret: str = ""
     whatsapp_api_version: str = "v21.0"
+    whatsapp_template_language: str = "en_US"
+    whatsapp_status_template: str = "harbor_order_status"
+
+    # Gmail SMTP. Both user and app password must be set, or email stays in demo mode.
+    gmail_user: str = ""
+    gmail_app_password: str = ""
+    owner_email: str = ""
 
     n8n_order_webhook_url: str = ""
     n8n_error_webhook_url: str = ""
@@ -140,23 +159,64 @@ class Settings(BaseSettings):
             return False
         return bool(self.whatsapp_token.strip() and self.whatsapp_phone_number_id.strip())
 
-    def uses_memory_index(self) -> bool:
-        """True when retrieval must not load MiniLM or a Qdrant client.
+    @property
+    def email_is_configured(self) -> bool:
+        return bool(self.gmail_user.strip() and self.gmail_app_password.strip())
 
-        Render's free web service has 512 MB of RAM. With no QDRANT_URL the
-        process uses an in-memory BM25 index. An explicit ``vector_store=qdrant``
-        off Render still uses the embedded file store.
+    @property
+    def n8n_configured(self) -> bool:
+        return any(
+            value.strip()
+            for value in (
+                self.n8n_order_webhook_url,
+                self.n8n_error_webhook_url,
+                self.n8n_notify_webhook_url,
+            )
+        )
+
+    def resolved_embedding_model(self) -> str:
+        embed = self.embedding_provider.strip().lower()
+        model = self.embedding_model.strip()
+        default_minilm = "sentence-transformers/all-MiniLM-L6-v2"
+        if embed == "fastembed" and model in {"", default_minilm}:
+            return "BAAI/bge-small-en-v1.5"
+        return model or default_minilm
+
+    def uses_memory_index(self) -> bool:
+        """True when retrieval must not load a vector model or a Qdrant client.
+
+        Render's free web service has 512 MB of RAM. MiniLM does not fit there.
+        Hosted embeddings (or fastembed) plus Qdrant Cloud do, because the
+        vectors are not computed with PyTorch inside this process. With no
+        QDRANT_URL the process stays on the in-memory BM25 index.
         """
         store = self.vector_store.strip().lower()
         embed = self.embedding_provider.strip().lower()
         if store in {"memory", "bm25"} or embed == "bm25":
             return True
         on_render = os.environ.get("RENDER", "").lower() == "true"
+        if on_render and embed in {"sentence-transformers", "minilm"}:
+            return True
         if on_render and not self.qdrant_url.strip():
             return True
         if store == "qdrant":
             return False
         return not self.qdrant_url.strip()
+
+    def embedding_status(self) -> dict:
+        if self.uses_memory_index():
+            return {"provider": "bm25", "model": "bm25", "device": "cpu"}
+        embed = self.embedding_provider.strip().lower()
+        model = self.resolved_embedding_model()
+        if embed == "hosted":
+            return {"provider": "hosted", "model": model, "device": "api"}
+        if embed == "fastembed":
+            return {"provider": "fastembed", "model": model, "device": "cpu"}
+        return {
+            "provider": "sentence-transformers",
+            "model": model,
+            "device": self.embedding_device,
+        }
 
     def knowledge_path(self) -> Path:
         if self.knowledge_dir.strip():
@@ -180,15 +240,7 @@ class Settings(BaseSettings):
             "base_url": self.resolved_base_url(),
             "active": active,
             "reason": reason,
-            "embeddings": (
-                {"provider": "bm25", "model": "bm25", "device": "cpu"}
-                if self.uses_memory_index()
-                else {
-                    "provider": "sentence-transformers",
-                    "model": self.embedding_model,
-                    "device": self.embedding_device,
-                }
-            ),
+            "embeddings": self.embedding_status(),
         }
 
 

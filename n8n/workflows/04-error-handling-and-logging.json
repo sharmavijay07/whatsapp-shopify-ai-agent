@@ -72,6 +72,7 @@
     "Append audit log": { "main": [[{ "node": "Log line", "type": "main", "index": 0 }]] }
   },
   "pinData": {},
+  "active": false,
   "settings": { "executionOrder": "v1" },
   "staticData": null,
   "meta": { "templateCredsSetupCompleted": true },

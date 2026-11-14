@@ -26,6 +26,9 @@ local = [
   "sentence-transformers>=3.0",
   "qdrant-client>=1.12",
 ]
+vectors = [
+  "fastembed>=0.4",
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",

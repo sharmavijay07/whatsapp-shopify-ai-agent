@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS drafts (
   status TEXT NOT NULL,
   created_turn_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
+  expires_at TEXT NOT NULL,
+  shopify_draft_id TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +153,15 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(drafts)").fetchall()
+        }
+        if "shopify_draft_id" not in columns:
+            self._conn.execute("ALTER TABLE drafts ADD COLUMN shopify_draft_id TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -382,6 +392,41 @@ class Database:
         row = self._one("SELECT * FROM orders WHERE number = ?", (cleaned,))
         return self._order_from_row(row) if row else None
 
+    def find_order_for_shopify(self, *, number: str = "", shopify_id: str = "") -> dict | None:
+        if number:
+            found = self.get_order_by_number(number)
+            if found:
+                return found
+        token = (shopify_id or "").strip()
+        if not token:
+            return None
+        suffix = token.rsplit("/", 1)[-1]
+        row = self._one(
+            "SELECT * FROM orders WHERE shopify_id = ? OR shopify_id = ? "
+            "OR shopify_id LIKE ? ORDER BY created_at DESC LIMIT 1",
+            (token, suffix, f"%/{suffix}"),
+        )
+        return self._order_from_row(row) if row else None
+
+    def update_order_progress(
+        self,
+        order_id: str,
+        *,
+        status: str | None = None,
+        financial_status: str | None = None,
+    ) -> dict | None:
+        current = self.get_order_by_id(order_id)
+        if current is None:
+            return None
+        next_status = status or current["status"]
+        next_financial = financial_status or current["financial_status"]
+        with self._lock:
+            self._conn.execute(
+                "UPDATE orders SET status = ?, financial_status = ? WHERE id = ?",
+                (next_status, next_financial, order_id),
+            )
+        return self.get_order_by_id(order_id)
+
     def orders_for_phone(self, phone: str) -> list[dict]:
         rows = self._all(
             "SELECT * FROM orders WHERE phone = ? ORDER BY created_at DESC, number DESC",
@@ -518,6 +563,7 @@ class Database:
         currency: str,
         created_turn_id: str,
         ttl_minutes: int,
+        shopify_draft_id: str = "",
     ) -> dict:
         with self._lock:
             self._conn.execute(
@@ -527,8 +573,8 @@ class Database:
             self._conn.execute(
                 "INSERT INTO drafts("
                 "id, phone, token, customer_id, lines_json, total_cents, currency, status, "
-                "created_turn_id, created_at, expires_at"
-                ") VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "created_turn_id, created_at, expires_at, shopify_draft_id"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
                 (
                     id,
                     phone,
@@ -540,6 +586,7 @@ class Database:
                     created_turn_id,
                     iso(),
                     iso(utcnow() + timedelta(minutes=ttl_minutes)),
+                    shopify_draft_id or "",
                 ),
             )
         draft = self.pending_draft(phone)
@@ -583,6 +630,7 @@ class Database:
             "created_turn_id": row["created_turn_id"],
             "created_at": row["created_at"],
             "expires_at": row["expires_at"],
+            "shopify_draft_id": row["shopify_draft_id"] or "",
         }
 
     def add_message(self, phone: str, role: str, content: str, turn_id: str) -> None:

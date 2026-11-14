@@ -1,9 +1,13 @@
 """Retrieval over the catalogue and shop policies.
 
 Groq does not offer embeddings. Locally, sentence-transformers MiniLM vectors
-live in Qdrant. When no Qdrant URL is configured (and on Render's 512 MB free
-instance) retrieval falls back to an in-memory BM25 index. That path imports
-neither Qdrant nor PyTorch.
+live in Qdrant. On Render's 512 MB free instance the default is an in-memory
+BM25 index, which imports neither Qdrant nor PyTorch.
+
+Qdrant Cloud (QDRANT_URL + QDRANT_API_KEY) is used when configured. Embeddings
+then come from a hosted OpenAI-compatible API (Jina's free tier fits the
+memory limit) or from fastembed. If that setup fails to load, retrieval falls
+back to BM25.
 """
 
 from __future__ import annotations
@@ -108,8 +112,103 @@ def get_embedder(model_name: str, device: str):
         return _MODEL
 
 
+def _l2(vector: list[float]) -> list[float]:
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm <= 0:
+        return vector
+    return [value / norm for value in vector]
+
+
+def qdrant_client_kwargs(settings: Settings) -> dict:
+    kwargs = {
+        "url": settings.qdrant_url.strip(),
+        "prefer_grpc": False,
+        "timeout": 20,
+    }
+    api_key = settings.qdrant_api_key.strip()
+    if api_key:
+        kwargs["api_key"] = api_key
+    return kwargs
+
+
+class _SentenceEmbedder:
+    def __init__(self, model_name: str, device: str):
+        self._model = get_embedder(model_name, device)
+        dimension = getattr(self._model, "get_embedding_dimension", None)
+        if dimension is None:
+            dimension = self._model.get_sentence_embedding_dimension
+        self.dimension = int(dimension())
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        matrix = self._model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        return [row.tolist() for row in matrix]
+
+
+class _FastEmbedder:
+    def __init__(self, model_name: str):
+        from fastembed import TextEmbedding
+
+        self._model = TextEmbedding(model_name=model_name)
+        probe = next(iter(self._model.embed(["harbor"])))
+        self.dimension = len(list(probe))
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        rows = []
+        for vector in self._model.embed(texts):
+            rows.append(_l2([float(value) for value in list(vector)]))
+        return rows
+
+
+class _HostedEmbedder:
+    """OpenAI-compatible POST {base}/embeddings. Jina's free API speaks this."""
+
+    def __init__(self, settings: Settings, client):
+        self.settings = settings
+        self.client = client
+        self._dimension = 0
+        self.dimension = len(self.encode(["harbor"])[0])
+
+    def _url(self) -> str:
+        base = self.settings.embedding_api_url.strip().rstrip("/")
+        if not base:
+            raise RuntimeError("EMBEDDING_API_URL is empty.")
+        if base.endswith("/embeddings"):
+            return base
+        return base + "/embeddings"
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        headers = {"Content-Type": "application/json"}
+        key = self.settings.embedding_api_key.strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        response = self.client.post(
+            self._url(),
+            headers=headers,
+            json={"model": self.settings.resolved_embedding_model(), "input": texts},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") or []
+        ordered = sorted(data, key=lambda item: item.get("index", 0))
+        vectors = [_l2([float(value) for value in item["embedding"]]) for item in ordered]
+        if len(vectors) != len(texts):
+            raise RuntimeError("Embedding API returned the wrong number of vectors.")
+        return vectors
+
+
+def build_embedder(settings: Settings, client=None):
+    provider = settings.embedding_provider.strip().lower()
+    if provider == "fastembed":
+        return _FastEmbedder(settings.resolved_embedding_model())
+    if provider == "hosted":
+        import httpx
+
+        return _HostedEmbedder(settings, client or httpx.Client(timeout=20.0))
+    return _SentenceEmbedder(settings.resolved_embedding_model(), settings.embedding_device)
+
+
 class KnowledgeBase:
-    def __init__(self, settings: Settings, db: Database):
+    def __init__(self, settings: Settings, db: Database, http_client=None):
         self.settings = settings
         self.db = db
         self.chunks: list[dict] = []
@@ -118,14 +217,20 @@ class KnowledgeBase:
         self.dim = 0
         self.collection = settings.qdrant_collection
         self.memory = MemoryIndex()
+        self._http = http_client
+        self._owns_http = False
         if settings.uses_memory_index():
             self.backend = "memory"
             return
         try:
             self._init_qdrant()
             self.backend = "qdrant"
-        except Exception as exc:  # noqa: BLE001 — MiniLM/Qdrant must not take down the free tier
+        except Exception as exc:  # noqa: BLE001 — a bad embedder must not take down the free tier
             logger.warning("Qdrant embeddings unavailable (%s). Using in-memory BM25.", exc)
+            if self._owns_http and self._http is not None:
+                self._http.close()
+            self._http = None
+            self._owns_http = False
             self.backend = "memory"
             self.client = None
             self.embedder = None
@@ -134,13 +239,18 @@ class KnowledgeBase:
     def _init_qdrant(self) -> None:
         from qdrant_client import QdrantClient
 
-        self.embedder = get_embedder(self.settings.embedding_model, self.settings.embedding_device)
-        dimension = getattr(self.embedder, "get_embedding_dimension", None)
-        if dimension is None:
-            dimension = self.embedder.get_sentence_embedding_dimension
-        self.dim = int(dimension())
+        if (
+            self.settings.embedding_provider.strip().lower() == "hosted"
+            and self._http is None
+        ):
+            import httpx
+
+            self._http = httpx.Client(timeout=20.0)
+            self._owns_http = True
+        self.embedder = build_embedder(self.settings, self._http)
+        self.dim = int(self.embedder.dimension)
         if self.settings.qdrant_url.strip():
-            self.client = QdrantClient(url=self.settings.qdrant_url.strip(), prefer_grpc=False)
+            self.client = QdrantClient(**qdrant_client_kwargs(self.settings))
         else:
             path = Path(self.settings.qdrant_path)
             path.mkdir(parents=True, exist_ok=True)
@@ -149,6 +259,9 @@ class KnowledgeBase:
     def close(self) -> None:
         if self.client is not None:
             self.client.close()
+        closer = getattr(self._http, "close", None)
+        if closer and getattr(self, "_owns_http", False):
+            closer()
 
     def load_markdown(self, directory: Path) -> list[dict]:
         documents = []
@@ -208,9 +321,12 @@ class KnowledgeBase:
                 self.db.set_meta("kb_hash", digest)
                 self.db.set_meta("kb_model", "bm25")
             return
+        model_key = (
+            f"{self.settings.embedding_provider}:{self.settings.resolved_embedding_model()}"
+        )
         if (
             self.db.get_meta("kb_hash") == digest
-            and self.db.get_meta("kb_model") == self.settings.embedding_model
+            and self.db.get_meta("kb_model") == model_key
             and self.vector_count() == len(chunks)
             and chunks
         ):
@@ -222,16 +338,11 @@ class KnowledgeBase:
         self._replace_collection(chunks, vectors)
         self.db.replace_chunks(chunks)
         self.db.set_meta("kb_hash", digest)
-        self.db.set_meta("kb_model", self.settings.embedding_model)
+        self.db.set_meta("kb_model", model_key)
         self.chunks = chunks
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        matrix = self.embedder.encode(
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return [row.tolist() for row in matrix]
+        return self.embedder.encode(texts)
 
     def _replace_collection(self, chunks: list[dict], vectors: list[list[float]]) -> None:
         from qdrant_client.models import Distance, PointStruct, VectorParams
